@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -23,7 +24,9 @@ func main() {
 
 	fmt.Fprintf(w, "\nLink\tStatus\n")
 	for link, status := range results {
-		fmt.Fprintf(w, "%v\t%v\n", link, status)
+		if status >= 400 {
+			fmt.Fprintf(w, "%v\t%v\n", link, status)
+		}
 	}
 
 	w.Flush()
@@ -35,12 +38,19 @@ func checkLink(link string, results map[string]int) {
 		return
 	}
 
+	client := &http.Client{
+		Timeout: time.Second * 1,
+		CheckRedirect: func(req *http.Request, voa []*http.Request) error {
+			checkLink(req.URL.String(), results)
+			return fmt.Errorf("Handling redirect")
+		},
+	}
+
 	fmt.Printf("Checking link %v...\n", link)
 
-	r, err := http.Get(link)
+	r, err := client.Get(link)
 	if err != nil {
-		fmt.Println("Link is broken:", link)
-		results[link] = -1
+		fmt.Println(err)
 		return
 	}
 
@@ -50,8 +60,7 @@ func checkLink(link string, results map[string]int) {
 	results[link] = r.StatusCode
 
 	// Check status code
-	if r.StatusCode > 400 {
-		fmt.Printf("%v | Status: %v", link, r.Status)
+	if r.StatusCode >= 400 {
 		return
 	}
 
@@ -67,17 +76,27 @@ func checkLink(link string, results map[string]int) {
 		return
 	}
 
-	checkNode(doc)
+	checkNode(doc, results)
 }
 
-func checkNode(node *html.Node) {
+func checkNode(node *html.Node, results map[string]int) {
 	for node != nil {
 		if node.Type == html.ElementNode && node.Data == "a" {
-			fmt.Println(node.Data)
+			// Get href attr
+			for _, attr := range node.Attr {
+				if attr.Key == "href" {
+					if strings.HasPrefix(attr.Val, "/") {
+						checkLink(ROOT+attr.Val, results)
+					} else {
+						checkLink(attr.Val, results)
+					}
+				}
+			}
 		}
 
-		// Recursively check each child
-		checkNode(node.FirstChild)
+		// Check node's children recursively
+		checkNode(node.FirstChild, results)
+
 		node = node.NextSibling
 	}
 }
